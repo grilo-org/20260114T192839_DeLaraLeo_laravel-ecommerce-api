@@ -1,0 +1,198 @@
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: ecommerce-api-app
+    restart: unless-stopped
+    working_dir: /var/www/html
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./:/var/www/html
+      - vendor_data:/var/www/html/vendor
+    networks:
+      - ecommerce-network
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    command: >
+      sh -c "
+      git config --global --add safe.directory '*' 2>/dev/null || true &&
+      cd /var/www/html &&
+      if [ ! -f vendor/autoload.php ]; then
+        echo 'Installing Composer dependencies...' &&
+        composer update --no-interaction --prefer-dist --no-scripts --ignore-platform-reqs &&
+        composer dump-autoload --optimize --no-scripts &&
+        echo 'Dependencies installed!'
+      fi &&
+      php artisan serve --host=0.0.0.0 --port=8000
+      "
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: ecommerce-api-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: laravel_development
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - ecommerce-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7.2-alpine
+    container_name: ecommerce-api-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - ecommerce-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  rabbitmq:
+    image: rabbitmq:3.13-management-alpine
+    container_name: ecommerce-api-rabbitmq
+    restart: unless-stopped
+    environment:
+      RABBITMQ_DEFAULT_USER: guest
+      RABBITMQ_DEFAULT_PASS: guest
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    networks:
+      - ecommerce-network
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  adminer:
+    image: adminer:4.8.1
+    container_name: ecommerce-api-adminer
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    networks:
+      - ecommerce-network
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      ADMINER_DEFAULT_SERVER: postgres
+
+  mailcatcher:
+    image: schickling/mailcatcher:latest
+    container_name: ecommerce-api-mailcatcher
+    restart: unless-stopped
+    ports:
+      - "1025:1025"
+      - "1080:1080"
+    networks:
+      - ecommerce-network
+
+  queue:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: ecommerce-api-queue
+    restart: unless-stopped
+    working_dir: /var/www/html
+    volumes:
+      - ./:/var/www/html
+      - vendor_data:/var/www/html/vendor
+    networks:
+      - ecommerce-network
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      app:
+        condition: service_started
+    command: >
+      sh -c "
+      git config --global --add safe.directory '*' 2>/dev/null || true &&
+      cd /var/www/html &&
+      if [ ! -f vendor/autoload.php ]; then
+        echo 'Installing Composer dependencies...' &&
+        composer update --no-interaction --prefer-dist --no-scripts --ignore-platform-reqs &&
+        composer dump-autoload --optimize --no-scripts &&
+        echo 'Dependencies installed!'
+      fi &&
+      php artisan queue:work redis --tries=3 --timeout=90
+      "
+
+  scheduler:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: ecommerce-api-scheduler
+    restart: unless-stopped
+    working_dir: /var/www/html
+    volumes:
+      - ./:/var/www/html
+      - vendor_data:/var/www/html/vendor
+    networks:
+      - ecommerce-network
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      app:
+        condition: service_started
+    command: >
+      sh -c "
+      git config --global --add safe.directory '*' 2>/dev/null || true &&
+      cd /var/www/html &&
+      if [ ! -f vendor/autoload.php ]; then
+        echo 'Installing Composer dependencies...' &&
+        composer update --no-interaction --prefer-dist --no-scripts --ignore-platform-reqs &&
+        composer dump-autoload --optimize --no-scripts &&
+        echo 'Dependencies installed!'
+      fi &&
+      while true; do
+        php artisan schedule:run --verbose --no-interaction &
+        sleep 60
+      done
+      "
+
+volumes:
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local
+  rabbitmq_data:
+    driver: local
+  vendor_data:
+    driver: local
+
+networks:
+  ecommerce-network:
+    driver: bridge
+
